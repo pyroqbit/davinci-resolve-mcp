@@ -34,6 +34,23 @@ check_resolve_running() {
 
 # Function to check environment variables
 check_resolve_env() {
+    # For Linux, if not set, try to set them based on common Arch Linux path
+    if [[ "$(uname -s)" == "Linux" ]]; then
+        if [ -z "$RESOLVE_SCRIPT_API" ]; then
+            export RESOLVE_SCRIPT_API="/opt/resolve/Developer/Scripting"
+            echo -e "${YELLOW}RESOLVE_SCRIPT_API was not set. Assuming Arch Linux default: /opt/resolve/Developer/Scripting${NC}"
+        fi
+        if [ -z "$RESOLVE_SCRIPT_LIB" ]; then
+            export RESOLVE_SCRIPT_LIB="/opt/resolve/libs/Fusion/fusionscript.so"
+            echo -e "${YELLOW}RESOLVE_SCRIPT_LIB was not set. Assuming Arch Linux default: /opt/resolve/libs/Fusion/fusionscript.so${NC}"
+        fi
+        # Ensure PYTHONPATH is also set
+        if [[ -z "$PYTHONPATH" || "$PYTHONPATH" != *"$RESOLVE_SCRIPT_API/Modules/"* ]]; then
+            export PYTHONPATH="$PYTHONPATH:$RESOLVE_SCRIPT_API/Modules/"
+             echo -e "${YELLOW}PYTHONPATH updated for Resolve Scripting API Modules.${NC}"
+        fi
+    fi
+
     if [ -z "$RESOLVE_SCRIPT_API" ] || [ -z "$RESOLVE_SCRIPT_LIB" ]; then
         return 1 # Not set
     else
@@ -137,7 +154,7 @@ else
 DaVinci Resolve MCP Server
 A server that connects to DaVinci Resolve via the Model Context Protocol (MCP)
 
-Version: 1.3.8 - Basic Server
+Version: 1.3.8 - Basic Server (with Linux path awareness)
 """
 
 import os
@@ -180,10 +197,15 @@ def initialize_resolve():
     except ImportError:
         logger.error("Failed to import DaVinciResolveScript. Check environment variables.")
         logger.error("RESOLVE_SCRIPT_API, RESOLVE_SCRIPT_LIB, and PYTHONPATH must be set correctly.")
-        logger.error("On macOS, typically:")
-        logger.error('export RESOLVE_SCRIPT_API="/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting"')
-        logger.error('export RESOLVE_SCRIPT_LIB="/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion/fusionscript.so"')
-        logger.error('export PYTHONPATH="$PYTHONPATH:$RESOLVE_SCRIPT_API/Modules/"')
+        if sys.platform == "darwin": # macOS specific paths
+            logger.error("On macOS, typically:")
+            logger.error('export RESOLVE_SCRIPT_API="/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting"')
+            logger.error('export RESOLVE_SCRIPT_LIB="/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion/fusionscript.so"')
+        elif sys.platform.startswith("linux"): # Linux specific paths
+            logger.error("On Linux (e.g., Arch based on /opt/resolve):")
+            logger.error('export RESOLVE_SCRIPT_API="/opt/resolve/Developer/Scripting"')
+            logger.error('export RESOLVE_SCRIPT_LIB="/opt/resolve/libs/Fusion/fusionscript.so"')
+        logger.error('export PYTHONPATH="$PYTHONPATH:$RESOLVE_SCRIPT_API/Modules/"') # Common for both
         return None
     
     except Exception as e:
@@ -227,7 +249,7 @@ def switch_page(page: str) -> str:
     if page not in valid_pages:
         return f"Error: Invalid page. Choose from {', '.join(valid_pages)}"
     
-    resolve.OpenPage(page.capitalize())
+    resolve.OpenPage(page.capitalize()) # Resolve API expects capitalized page names
     return f"Successfully switched to {page} page"
 
 # Start the server
@@ -251,171 +273,179 @@ EOF
         echo -e "${GREEN}✓ Created basic resolve_mcp_server.py${NC}"
     fi
     
-    # Check if run-now.sh is missing and create if needed
-    if [ ! -f "$SCRIPT_DIR/run-now.sh" ]; then
-        echo -e "${YELLOW}Creating run-now.sh script...${NC}"
-        cat > "$SCRIPT_DIR/run-now.sh" << 'EOF'
-#!/bin/bash
-# Quick setup script to get DaVinci Resolve MCP Server running
-
-# Colors for terminal output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-NC='\033[0m' # No Color
-
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
-VENV_DIR="$SCRIPT_DIR/venv"
-
-echo -e "${GREEN}Setting up DaVinci Resolve MCP Server with virtual environment...${NC}"
-
-# Create and activate virtual environment
-if [ ! -d "$VENV_DIR" ]; then
-    echo -e "${YELLOW}Creating Python virtual environment...${NC}"
-    python3 -m venv "$VENV_DIR"
-fi
-
-# Install MCP SDK in the virtual environment with CLI support
-echo -e "${YELLOW}Installing MCP SDK with CLI support in virtual environment...${NC}"
-"$VENV_DIR/bin/pip" install "mcp[cli]"
-
-# Source environment variables from .zshrc if they exist
-if grep -q "RESOLVE_SCRIPT_API" "$HOME/.zshrc"; then
-    echo -e "${YELLOW}Sourcing environment variables from .zshrc...${NC}"
-    source "$HOME/.zshrc"
-else
-    echo -e "${YELLOW}Setting environment variables...${NC}"
-    export RESOLVE_SCRIPT_API="/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting"
-    export RESOLVE_SCRIPT_LIB="/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion/fusionscript.so"
-    export PYTHONPATH="$PYTHONPATH:$RESOLVE_SCRIPT_API/Modules/"
-fi
-
-# Make the server script executable
-chmod +x "$SCRIPT_DIR/resolve_mcp_server.py"
-
-# Run the server with the virtual environment's Python
-echo -e "${GREEN}Starting DaVinci Resolve MCP Server...${NC}"
-echo -e "${YELLOW}Make sure DaVinci Resolve is running!${NC}"
-echo ""
-
-"$VENV_DIR/bin/mcp" dev "$SCRIPT_DIR/resolve_mcp_server.py"
-EOF
-        chmod 755 "$SCRIPT_DIR/run-now.sh"
-        echo -e "${GREEN}✓ Created run-now.sh script${NC}"
-    fi
-    
-    # Check if setup.sh is missing and create if needed
+    # Check if setup.sh is missing and create it
     if [ ! -f "$SCRIPT_DIR/setup.sh" ]; then
-        echo -e "${YELLOW}Creating setup.sh script...${NC}"
+        echo -e "${YELLOW}Creating setup.sh...${NC}"
         cat > "$SCRIPT_DIR/setup.sh" << 'EOF'
 #!/bin/bash
 # Setup script for DaVinci Resolve MCP Server
 
-# Colors for terminal output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-NC='\033[0m' # No Color
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+VENV_DIR="$SCRIPT_DIR/venv"
+PYTHON_EXEC="python3" # Use python3 by default
+
+echo "Starting DaVinci Resolve MCP Server setup..."
+
+# Detect OS
+OS_TYPE=$(uname -s)
+echo "Detected OS: $OS_TYPE"
+
+# Set Resolve environment variables if not already set
+if [[ "$OS_TYPE" == "Darwin" ]]; then # macOS
+    : "${RESOLVE_SCRIPT_API:=/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting}"
+    : "${RESOLVE_SCRIPT_LIB:=/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion/fusionscript.so}"
+    echo "Using macOS paths for Resolve scripting."
+elif [[ "$OS_TYPE" == "Linux" ]]; then # Linux
+    : "${RESOLVE_SCRIPT_API:=/opt/resolve/Developer/Scripting}"
+    : "${RESOLVE_SCRIPT_LIB:=/opt/resolve/libs/Fusion/fusionscript.so}"
+    echo "Using Linux (Arch/opt) paths for Resolve scripting."
+else
+    echo "Unsupported OS for automatic Resolve path detection: $OS_TYPE"
+    echo "Please set RESOLVE_SCRIPT_API and RESOLVE_SCRIPT_LIB manually if DaVinci Resolve is installed."
+fi
+
+# Export environment variables
+export RESOLVE_SCRIPT_API
+export RESOLVE_SCRIPT_LIB
+export PYTHONPATH="$PYTHONPATH:$RESOLVE_SCRIPT_API/Modules/"
+
+echo "RESOLVE_SCRIPT_API: $RESOLVE_SCRIPT_API"
+echo "RESOLVE_SCRIPT_LIB: $RESOLVE_SCRIPT_LIB"
+echo "PYTHONPATH: $PYTHONPATH"
+
+# Check if Python 3 is available
+if ! command -v $PYTHON_EXEC &> /dev/null; then
+    echo "Error: $PYTHON_EXEC is not installed or not in PATH."
+    exit 1
+fi
+echo "Using Python: $($PYTHON_EXEC --version)"
+
+# Create virtual environment
+if [ ! -d "$VENV_DIR" ]; then
+    echo "Creating Python virtual environment in $VENV_DIR..."
+    $PYTHON_EXEC -m venv "$VENV_DIR"
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to create virtual environment."
+        exit 1
+    fi
+else
+    echo "Virtual environment already exists at $VENV_DIR."
+fi
+
+# Activate virtual environment (for this script's context)
+# shellcheck source=/dev/null
+source "$VENV_DIR/bin/activate"
+
+# Install/Upgrade requirements
+echo "Installing/upgrading requirements from requirements.txt..."
+if [ -f "$SCRIPT_DIR/requirements.txt" ]; then
+    "$VENV_DIR/bin/pip" install --upgrade pip
+    "$VENV_DIR/bin/pip" install -r "$SCRIPT_DIR/requirements.txt"
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to install requirements."
+        # Deactivate venv before exiting if sourced
+        type deactivate &>/dev/null && deactivate
+        exit 1
+    fi
+else
+    echo "Warning: requirements.txt not found in $SCRIPT_DIR. Skipping dependency installation."
+    echo "Please ensure 'mcp' and other necessary packages are installed manually in the venv."
+fi
+
+echo "Setup complete."
+echo "To activate the environment, run: source $VENV_DIR/bin/activate"
+echo "To run the server, use: $VENV_DIR/bin/python $SCRIPT_DIR/resolve_mcp_server.py or ./run-now.sh"
+
+# Deactivate venv if sourced
+type deactivate &>/dev/null && deactivate
+EOF
+        chmod 755 "$SCRIPT_DIR/setup.sh"
+        echo -e "${GREEN}✓ Created setup.sh${NC}"
+    fi
+
+    # Check if run-now.sh is missing and create it
+    if [ ! -f "$SCRIPT_DIR/run-now.sh" ]; then
+        echo -e "${YELLOW}Creating run-now.sh...${NC}"
+        cat > "$SCRIPT_DIR/run-now.sh" << 'EOF'
+#!/bin/bash
+# Script to run the DaVinci Resolve MCP Server directly
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 VENV_DIR="$SCRIPT_DIR/venv"
+RESOLVE_SERVER_SCRIPT="$SCRIPT_DIR/resolve_mcp_server.py"
 
-echo -e "${GREEN}Setting up DaVinci Resolve MCP Server environment...${NC}"
+echo "Attempting to start DaVinci Resolve MCP Server..."
 
-# Create virtual environment if it doesn't exist
-if [ ! -d "$VENV_DIR" ]; then
-    echo -e "${YELLOW}Creating Python virtual environment...${NC}"
-    python3 -m venv "$VENV_DIR"
-    
-    echo -e "${YELLOW}Installing required packages...${NC}"
-    "$VENV_DIR/bin/pip" install "mcp[cli]"
+# Detect OS
+OS_TYPE=$(uname -s)
+echo "Detected OS: $OS_TYPE"
+
+# Set Resolve environment variables if not already set
+if [[ "$OS_TYPE" == "Darwin" ]]; then # macOS
+    : "${RESOLVE_SCRIPT_API:=/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting}"
+    : "${RESOLVE_SCRIPT_LIB:=/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion/fusionscript.so}"
+elif [[ "$OS_TYPE" == "Linux" ]]; then # Linux
+    : "${RESOLVE_SCRIPT_API:=/opt/resolve/Developer/Scripting}"
+    : "${RESOLVE_SCRIPT_LIB:=/opt/resolve/libs/Fusion/fusionscript.so}"
 else
-    echo -e "${YELLOW}Virtual environment already exists. Updating packages...${NC}"
-    "$VENV_DIR/bin/pip" install --upgrade "mcp[cli]"
+    echo "Warning: Unsupported OS for automatic Resolve path detection: $OS_TYPE"
+    echo "Ensure RESOLVE_SCRIPT_API and RESOLVE_SCRIPT_LIB are set if DaVinci Resolve is installed."
 fi
 
-# Setup environment variables
-RESOLVE_SCRIPT_API="/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting"
-RESOLVE_SCRIPT_LIB="/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion/fusionscript.so"
+# Export environment variables
+export RESOLVE_SCRIPT_API
+export RESOLVE_SCRIPT_LIB
+export PYTHONPATH="$PYTHONPATH:$RESOLVE_SCRIPT_API/Modules/"
 
-# Find shell profile
-if [ -f "$HOME/.zshrc" ]; then
-    SHELL_PROFILE="$HOME/.zshrc"
-elif [ -f "$HOME/.bash_profile" ]; then
-    SHELL_PROFILE="$HOME/.bash_profile"
-elif [ -f "$HOME/.bashrc" ]; then
-    SHELL_PROFILE="$HOME/.bashrc"
+echo "Using RESOLVE_SCRIPT_API: $RESOLVE_SCRIPT_API"
+echo "Using RESOLVE_SCRIPT_LIB: $RESOLVE_SCRIPT_LIB"
+echo "Using PYTHONPATH: $PYTHONPATH"
+
+# Check if DaVinci Resolve is running
+if ! pgrep -x "Resolve" > /dev/null; then
+    echo "Error: DaVinci Resolve process 'Resolve' not found."
+    echo "Please start DaVinci Resolve before running this server."
+    exit 1
+fi
+echo "DaVinci Resolve process found."
+
+# Check if server script exists
+if [ ! -f "$RESOLVE_SERVER_SCRIPT" ]; then
+    echo "Error: Server script $RESOLVE_SERVER_SCRIPT not found."
+    echo "Please run setup.sh first or ensure the script exists."
+    exit 1
 fi
 
-if [ -n "$SHELL_PROFILE" ]; then
-    echo -e "${YELLOW}Adding environment variables to $SHELL_PROFILE...${NC}"
-    
-    # Check if variables are already in the profile
-    if grep -q "RESOLVE_SCRIPT_API" "$SHELL_PROFILE"; then
-        echo -e "${YELLOW}Environment variables already exist in $SHELL_PROFILE. Skipping...${NC}"
-    else
-        echo "" >> "$SHELL_PROFILE"
-        echo "# DaVinci Resolve MCP Server environment variables" >> "$SHELL_PROFILE"
-        echo "export RESOLVE_SCRIPT_API=\"$RESOLVE_SCRIPT_API\"" >> "$SHELL_PROFILE"
-        echo "export RESOLVE_SCRIPT_LIB=\"$RESOLVE_SCRIPT_LIB\"" >> "$SHELL_PROFILE"
-        echo "export PYTHONPATH=\"\$PYTHONPATH:\$RESOLVE_SCRIPT_API/Modules/\"" >> "$SHELL_PROFILE"
-        echo -e "${GREEN}Environment variables added to $SHELL_PROFILE${NC}"
-        echo -e "${YELLOW}Please restart your terminal or run 'source $SHELL_PROFILE' to apply changes${NC}"
-    fi
+# Check if venv exists and activate it
+if [ -d "$VENV_DIR" ] && [ -f "$VENV_DIR/bin/activate" ]; then
+    echo "Activating virtual environment: $VENV_DIR"
+    # shellcheck source=/dev/null
+    source "$VENV_DIR/bin/activate"
 else
-    echo -e "${RED}Warning: Could not find a shell profile to update.${NC}"
-    echo "Please manually add the following environment variables to your shell profile:"
-    echo "export RESOLVE_SCRIPT_API=\"$RESOLVE_SCRIPT_API\""
-    echo "export RESOLVE_SCRIPT_LIB=\"$RESOLVE_SCRIPT_LIB\""
-    echo "export PYTHONPATH=\"\$PYTHONPATH:\$RESOLVE_SCRIPT_API/Modules/\""
+    echo "Error: Virtual environment not found at $VENV_DIR."
+    echo "Please run setup.sh to create the virtual environment."
+    exit 1
 fi
 
-# Setup Cursor configuration
-CURSOR_CONFIG_DIR="$HOME/.cursor"
-CURSOR_MCP_CONFIG="$CURSOR_CONFIG_DIR/mcp.json"
+# Run the server
+echo "Starting server: $VENV_DIR/bin/python $RESOLVE_SERVER_SCRIPT"
+"$VENV_DIR/bin/python" "$RESOLVE_SERVER_SCRIPT"
 
-if [ ! -d "$CURSOR_CONFIG_DIR" ]; then
-    echo -e "${YELLOW}Creating Cursor config directory...${NC}"
-    mkdir -p "$CURSOR_CONFIG_DIR"
-fi
+# Deactivate venv (will only run if script exits gracefully)
+type deactivate &>/dev/null && deactivate
 
-# Create or update Cursor MCP config
-echo -e "${YELLOW}Setting up Cursor MCP configuration...${NC}"
-cat > "$CURSOR_MCP_CONFIG" << EOF
-{
-  "mcpServers": {
-    "davinci-resolve": {
-      "name": "DaVinci Resolve MCP",
-      "command": "$VENV_DIR/bin/python",
-      "args": ["$SCRIPT_DIR/../src/main.py"]
-    }
-  }
-}
+echo "Server exited."
 EOF
-echo -e "${GREEN}Cursor MCP configuration created at $CURSOR_MCP_CONFIG${NC}"
-
-# Make scripts executable
-chmod +x "$SCRIPT_DIR/resolve_mcp_server.py"
-chmod +x "$SCRIPT_DIR/run-now.sh"
-chmod +x "$SCRIPT_DIR/check-resolve-ready.sh"
-
-echo -e "${GREEN}Setup complete!${NC}"
-echo -e "${YELLOW}To use DaVinci Resolve with Cursor:${NC}"
-echo "1. Make sure DaVinci Resolve is running"
-echo "2. Start Cursor"
-echo "3. Ask the AI assistant to interact with DaVinci Resolve"
-echo ""
-echo -e "${YELLOW}You can also run:${NC}"
-echo "  ./check-resolve-ready.sh - To verify your environment before starting"
-echo "  ./run-now.sh - To directly start the MCP server for testing"
-EOF
-        chmod 755 "$SCRIPT_DIR/setup.sh"
-        echo -e "${GREEN}✓ Created setup.sh script${NC}"
+        chmod 755 "$SCRIPT_DIR/run-now.sh"
+        echo -e "${GREEN}✓ Created run-now.sh${NC}"
     fi
-    
-    # Run setup to ensure everything is properly configured
-    echo -e "${YELLOW}Running setup to ensure proper configuration...${NC}"
-    "$SCRIPT_DIR/setup.sh"
+    # Re-run the file check after attempting to create missing ones
+    files_status=$(check_required_files)
+    file_check_result=$?
+    if [ "$file_check_result" -ne 0 ]; then
+        echo -e "${RED}✗ Still missing required files or permissions after attempting recreation. Please check manually.${NC}"
+        exit 1
+    fi
 fi
 
 # Check 1: Is DaVinci Resolve running?
